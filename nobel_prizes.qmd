@@ -32,3 +32,159 @@ The Nobel Prize in Literature is often described as a reward for a lifetime of w
 - Some laureates have won more than one prize (such as Marie Curie), so they will appear in more than one row after unnesting.
 - The API returns a limited number of results per request by default, so I will set a higher `limit` (or use `offset`) to make sure I get all laureates.
 - Some birth dates may be missing or incomplete, so I will only use the year.
+
+
+## Data
+I requested all laureates from the Nobel Prize API in a single request. The data is saved to a local file so it doesn’t have to be downloaded again each time the report is rendered.
+
+```{r}
+
+library(httr2)
+library(tidyverse)
+
+if (file.exists("laureates.rds")) {
+  laureates_raw <- readRDS("laureates.rds")
+} else {
+  resp <- request("https://api.nobelprize.org/2.1/laureates") |>
+    req_url_query(limit = 1100) |>
+    req_perform() |>
+    resp_body_json()
+  laureates_raw <- resp$laureates
+  saveRDS(laureates_raw, "laureates.rds")
+}
+
+length(laureates_raw)
+```
+
+```{r}
+laureates <- tibble(laureate = laureates_raw) |>
+  hoist(laureate,
+        name       = c("knownName", "en"),
+        gender     = "gender",
+        birth_date = c("birth", "date"),
+        prizes     = "nobelPrizes") |>
+  select(-laureate) |>
+  unnest_longer(prizes) |>
+  hoist(prizes,
+        award_year = "awardYear",
+        category   = c("category", "en")) |>
+  select(-prizes)
+
+glimpse(laureates)
+```
+The JSON data is nested, so I used hoist() to pull out only the fields I need: name, gender, birth date and prizes. Because some laureates have won more than one prize, I used unnest_longer() to get one row per prize, and then extracted the award year and category.
+
+Organizations have no birth date, so I removed them. Some birth dates are incomplete (for example, “1948-00-00”), so I only used the birth year. Age is calculated as award year minus birth year.
+
+```{r}
+laureates_age <- laureates |>
+  filter(!is.na(birth_date)) |>
+  mutate(
+    birth_year = as.integer(str_sub(birth_date, 1, 4)),
+    award_year = as.integer(award_year),
+    age        = award_year - birth_year
+  ) |>
+  filter(!is.na(age))
+
+nrow(laureates_age)
+summary(laureates_age$age)
+```
+
+After cleaning, the data has 1,005 rows. The ages range from 17 to 97, with an average of about 61.
+
+
+### Question 1: On average, at what age do laureates win the Nobel Prize in Literature?
+
+```{r}
+literature <- laureates_age |>
+  filter(category == "Literature")
+
+literature |>
+  summarise(
+    laureates  = n(),
+    mean_age   = round(mean(age), 1),
+    median_age = median(age),
+    youngest   = min(age),
+    oldest     = max(age)
+  )
+```
+
+Literature laureates receive the prize at an average age of 65 (median 67). The youngest was Rudyard Kipling at 42 (1907) and the oldest was Doris Lessing at 88 (2007). This supports the idea that the prize usually comes late in a writer’s career.
+
+
+
+### Question 2: Has the age of Literature laureates changed over the decades?
+
+```{r}
+ggplot(literature, aes(x = award_year, y = age)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Age of Literature laureates at the time of the award",
+       x = "Award year", y = "Age") +
+  theme_minimal()
+```
+
+Each point is one Literature laureate, and the blue line shows the overall trend. Ages vary a lot from year to year, but the trend is clear: after a dip to around 60 in the 1920s–1930s, the age of Literature laureates has steadily increased and is now around 70.
+
+
+
+### Question 3: Are Literature laureates older than laureates in other categories?
+
+```{r}
+laureates_age |>
+  group_by(category) |>
+  summarise(mean_age = round(mean(age), 1),
+            median_age = median(age),
+            laureates = n()) |>
+  arrange(desc(mean_age))
+
+ggplot(laureates_age, aes(x = reorder(category, age, median), y = age)) +
+  geom_boxplot() +
+  coord_flip() +
+  labs(title = "Age at award by category", x = NULL, y = "Age") +
+  theme_minimal()
+```
+
+Literature laureates are among the oldest: their average age (65.0) is second only to Economic Sciences (67.2). Science laureates are younger, with Physics having the youngest average age (57.8). One possible reason is that economics and literature prizes often reward a lifetime of work.
+
+
+
+### Question 4: Who are the youngest and oldest laureates in each category?
+
+```{r}
+youngest <- laureates_age |>
+  group_by(category) |>
+  slice_min(age, n = 1, with_ties = FALSE) |>
+  mutate(type = "Youngest")
+
+oldest <- laureates_age |>
+  group_by(category) |>
+  slice_max(age, n = 1, with_ties = FALSE) |>
+  mutate(type = "Oldest")
+
+bind_rows(youngest, oldest) |>
+  ungroup() |>
+  select(category, type, name, age, award_year) |>
+  arrange(category, type)
+```
+
+The youngest laureate overall is Malala Yousafzai, who won the Peace Prize at 17 in 2014. The oldest is John B. Goodenough, who won the Chemistry Prize at 97 in 2019. 
+
+Looking at the oldest laureate in each category, most of them won recently: five of the six received the prize after 1990. This supports the finding in Question 2 that laureates are getting older over time.
+
+
+## Conclusion
+
+The data supports the idea that the Nobel Prize in Literature rewards a lifetime of work.
+Writers receive the prize at an average age of 65, older than laureates in most other
+categories, and the average age of Literature laureates has increased over time.
+
+## Use of AI
+
+I used Claude (Anthropic) as a tutor for planning the questions, writing and
+troubleshooting the R code, and wording the interpretations.
+
+## References
+
+- Nobel Prize API v2.1: <https://api.nobelprize.org/2.1/laureates>
+- Nobel Prize Developer Zone: <https://www.nobelprize.org/about/developer-zone-2/>
